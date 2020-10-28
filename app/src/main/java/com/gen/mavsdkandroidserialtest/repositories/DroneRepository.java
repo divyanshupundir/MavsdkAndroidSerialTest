@@ -6,23 +6,25 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
 import android.util.Log;
-import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.LiveDataReactiveStreams;
 
-import com.gen.mavsdkandroidserialtest.R;
+import com.gen.mavsdkandroidserialtest.io.TcpInputOutputManager;
 import com.gen.mavsdkandroidserialtest.models.PositionRelative;
 import com.gen.mavsdkandroidserialtest.models.Speed;
 import com.google.common.collect.Lists;
 import com.hoho.android.usbserial.driver.UsbSerialDriver;
 import com.hoho.android.usbserial.driver.UsbSerialPort;
 import com.hoho.android.usbserial.driver.UsbSerialProber;
+import com.hoho.android.usbserial.util.SerialInputOutputManager;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -37,19 +39,21 @@ import io.reactivex.schedulers.Schedulers;
 public class DroneRepository {
     private static final String TAG = "LOG_" + DroneRepository.class.getName();
     private static final boolean GENERATE_DUMMY_DATA = false;
-    private static final boolean IS_SIMULATION = false;
+    private static final boolean IS_SITL = false;
 
-    private static final String NO_ADDRESS = "no_address";
-    private static final int USB_BAUD_RATE = 57600;
     private static final String MAVSDK_SERVER_IP = "127.0.0.1";
+    private static final String TCP_SERVER_IP = "127.0.0.1";
+    private static final int TCP_SERVER_PORT = 8787;
+    private static final int USB_BAUD_RATE = 57600;
+    private static final int BUFFER_SIZE = 2048;
+    private static final int IO_TIMEOUT = 1000;
     private static final long THROTTLE_TIME_MILLIS = 500;
 
     private static DroneRepository instance;
 
+    private Context mAppContext;
     private System mDrone;
     private MavsdkServer mMavsdkServer;
-    private Context mAppContext;
-    private UsbDeviceConnection connection;
 
     private LiveData<PositionRelative> mPositionRelativeLiveData;
     private LiveData<Speed> mSpeedLiveData;
@@ -70,36 +74,29 @@ public class DroneRepository {
         if (GENERATE_DUMMY_DATA) {
             initializeDummyDataStreams();
         } else {
-            if (IS_SIMULATION) {
+            if (IS_SITL) {
                 initializeServerAndDrone("udp://192.168.0.255:14550");
             } else {
-                initializeServerAndDrone(initializeUsbDevice());
+                initializeUsbAndTcp();
+                initializeServerAndDrone("tcp://" + TCP_SERVER_IP + ":" + TCP_SERVER_PORT);
             }
             initializeDataStreams();
         }
     }
 
-    // Using usb-serial-for-android
-    private String initializeUsbDevice() {
+    private void initializeUsbAndTcp() {
         UsbManager usbManager = (UsbManager) mAppContext.getSystemService(Context.USB_SERVICE);
         List<UsbSerialDriver> driverList = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager);
-
         if (driverList.isEmpty()) {
-            Toast.makeText(mAppContext, R.string.str_usb_device_not_found, Toast.LENGTH_SHORT).show();
-            return NO_ADDRESS;
+            return;
         }
 
         UsbSerialDriver usbSerialDriver = driverList.get(0);
         UsbDevice usbDevice = usbSerialDriver.getDevice();
-        boolean hasPermission = usbManager.hasPermission(usbDevice);
+        Log.d(TAG, "initializeUsbDevice: hasPermission: " + usbManager.hasPermission(usbDevice));
 
-        if (!hasPermission) {
-            Toast.makeText(mAppContext, R.string.str_usb_permission_not_granted, Toast.LENGTH_SHORT).show();
-            return NO_ADDRESS;
-        }
-
-        connection = usbManager.openDevice(usbDevice);
         UsbSerialPort usbSerialPort = usbSerialDriver.getPorts().get(0);
+        UsbDeviceConnection connection = usbManager.openDevice(usbDevice);
 
         try {
             usbSerialPort.open(connection);
@@ -111,69 +108,49 @@ public class DroneRepository {
         } catch (IOException e) {
             e.printStackTrace();
         }
-        Log.d(TAG, "initializeUsbDevice: port isOpen: " + usbSerialPort.isOpen());
 
+        SerialInputOutputManager serialManager = new SerialInputOutputManager(usbSerialPort);
+        serialManager.setReadTimeout(IO_TIMEOUT);
+        serialManager.setReadBufferSize(BUFFER_SIZE);
+        serialManager.setWriteTimeout(IO_TIMEOUT);
+        serialManager.setWriteBufferSize(BUFFER_SIZE);
 
-        // Remove comments to read the device data on Java side
-//        SerialInputOutputManager inputOutputManager = new SerialInputOutputManager(usbSerialPort);
-//
-//        inputOutputManager.setReadTimeout(1000);
-//        inputOutputManager.setReadBufferSize(2048);
-//        inputOutputManager.setWriteTimeout(1000);
-//        inputOutputManager.setWriteBufferSize(20488);
-//        inputOutputManager.setListener(new SerialInputOutputManager.Listener() {
-//            @Override
-//            public void onNewData(byte[] data) {
-//                Log.d(TAG, "onNewData: " + Arrays.toString(data));
-//                Log.d(TAG, "onNewData: fd: " + connection.getFileDescriptor());
-//            }
-//            @Override
-//            public void onRunError(Exception e) {
-//                Log.d(TAG, "onRunError: " + e);
-//            }
-//        });
-//        Executors.newSingleThreadExecutor().submit(inputOutputManager);
+        TcpInputOutputManager tcpManager = new TcpInputOutputManager(TCP_SERVER_PORT);
+        tcpManager.setReadBufferSize(BUFFER_SIZE);
+        tcpManager.setWriteBufferSize(BUFFER_SIZE);
 
+        serialManager.setListener(new SerialInputOutputManager.Listener() {
+            @Override
+            public void onNewData(byte[] data) {
+                // Sending Serial data to TCP
+                tcpManager.writeAsync(data);
+            }
+            @Override
+            public void onRunError(Exception e) {
+            }
+        });
 
-        String systemAddress = "serial_fd://" + connection.getFileDescriptor() + ":" + USB_BAUD_RATE;
-//        String droneSystemAddress = "serial://" + usbDevice.getDeviceName() + ":" + USB_BAUD_RATE;
+        tcpManager.setListener(new TcpInputOutputManager.Listener() {
+            @Override
+            public void onNewData(byte[] data) {
+                // Sending TCP data to Serial
+                serialManager.writeAsync(data);
+            }
+            @Override
+            public void onRunError(Exception e) {
+            }
+        });
 
-        Log.d(TAG, "initializeUsbDevice: " + systemAddress);
-        return systemAddress;
+        ExecutorService executorService = Executors.newFixedThreadPool(2);
+        executorService.submit(serialManager);
+        executorService.submit(tcpManager);
     }
-
-
-    // Without using usb-serial-for-android
-//    private String initializeUsbDevice() {
-//        UsbManager usbManager = (UsbManager) mAppContext.getSystemService(Context.USB_SERVICE);
-//        HashMap<String, UsbDevice> deviceHm = usbManager.getDeviceList();
-//        if (deviceHm.isEmpty()) {
-//            return NO_ADDRESS;
-//        }
-//
-//        UsbDevice usbDevice = deviceHm.values().iterator().next();
-//        boolean hasPermission = usbManager.hasPermission(usbDevice);
-//        if (!hasPermission) {
-//            Toast.makeText(mAppContext, R.string.str_usb_permission_not_granted, Toast.LENGTH_SHORT).show();
-//            return NO_ADDRESS;
-//        }
-//
-//        UsbDeviceConnection connection = usbManager.openDevice(usbDevice);
-//
-//        String systemAddress = "serial_fd://" + connection.getFileDescriptor() + ":" + USB_BAUD_RATE;
-////        String systemAddress = "serial://" + usbDevice.getDeviceName() + ":" + USB_BAUD_RATE;
-//
-//        Log.d(TAG, "initializeUsbDevice: " + systemAddress);
-//        return systemAddress;
-//    }
-
 
     private void initializeServerAndDrone(String systemAddress) {
         mMavsdkServer = new MavsdkServer();
         int mavsdkServerPort = mMavsdkServer.run(systemAddress);
-        mDrone = new System(MAVSDK_SERVER_IP, mavsdkServerPort);
 
-//        connection.close();
+        mDrone = new System(MAVSDK_SERVER_IP, mavsdkServerPort);
     }
 
     private void initializeDataStreams() {
@@ -183,7 +160,7 @@ public class DroneRepository {
                         .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(new Function<Telemetry.PositionVelocityNed, PositionRelative>() {
                             @Override
-                            public PositionRelative apply(Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
+                            public PositionRelative apply(@NonNull Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
                                 float distance = (float) Math.hypot(positionVelocityNed.getPosition().getNorthM(), positionVelocityNed.getPosition().getEastM());
                                 float height = Math.abs(positionVelocityNed.getPosition().getDownM());
                                 return new PositionRelative(distance, height);
@@ -198,7 +175,7 @@ public class DroneRepository {
                         .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(new Function<Telemetry.PositionVelocityNed, Speed>() {
                             @Override
-                            public Speed apply(Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
+                            public Speed apply(@NonNull Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
                                 float hspeed = (float) Math.hypot(positionVelocityNed.getVelocity().getNorthMS(), positionVelocityNed.getVelocity().getEastMS());
                                 float vspeed = Math.abs(positionVelocityNed.getVelocity().getDownMS());
                                 return new Speed(hspeed, vspeed);
@@ -238,7 +215,7 @@ public class DroneRepository {
                         .interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(new Function<Long, PositionRelative>() {
                             @Override
-                            public PositionRelative apply(Long aLong) throws Exception {
+                            public PositionRelative apply(@NonNull Long aLong) throws Exception {
                                 return new PositionRelative(100 * random.nextFloat(), 100 * random.nextFloat());
                             }
                         });
@@ -250,7 +227,7 @@ public class DroneRepository {
                         .interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(new Function<Long, Speed>() {
                             @Override
-                            public Speed apply(Long aLong) throws Exception {
+                            public Speed apply(@NonNull Long aLong) throws Exception {
                                 return new Speed(10 * random.nextFloat(), 10 * random.nextFloat());
                             }
                         });
@@ -263,7 +240,7 @@ public class DroneRepository {
                         .repeat()
                         .map(new Function<Long, Telemetry.Battery>() {
                             @Override
-                            public Telemetry.Battery apply(Long aLong) throws Exception {
+                            public Telemetry.Battery apply(@NonNull Long aLong) throws Exception {
                                 return new Telemetry.Battery((float) (16.8 + aLong * (12.6 - 16.8) / 21), 1 - aLong.floatValue() * 5 * 0.01f);
                             }
                         });
@@ -276,7 +253,7 @@ public class DroneRepository {
                         .repeat()
                         .map(new Function<Long, Telemetry.GpsInfo>() {
                             @Override
-                            public Telemetry.GpsInfo apply(Long aLong) throws Exception {
+                            public Telemetry.GpsInfo apply(@NonNull Long aLong) throws Exception {
                                 return new Telemetry.GpsInfo((int) (2 * aLong), Telemetry.FixType.FIX_3D);
                             }
                         });
@@ -291,7 +268,7 @@ public class DroneRepository {
                         .repeat()
                         .map(new Function<Long, Telemetry.Position>() {
                             @Override
-                            public Telemetry.Position apply(Long aLong) throws Exception {
+                            public Telemetry.Position apply(@NonNull Long aLong) throws Exception {
                                 return new Telemetry.Position(
                                         12.904993 + (12.906055 - 12.904993) * arr.get(aLong.intValue()) / (arr.size()/2),
                                         80.157708 + (80.159610 - 80.157708) * arr.get(aLong.intValue()) / (arr.size()/2),
