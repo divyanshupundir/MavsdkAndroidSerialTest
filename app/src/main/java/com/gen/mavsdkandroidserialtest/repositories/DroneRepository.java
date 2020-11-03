@@ -33,17 +33,16 @@ import io.mavsdk.System;
 import io.mavsdk.mavsdkserver.MavsdkServer;
 import io.mavsdk.telemetry.Telemetry;
 import io.reactivex.Flowable;
-import io.reactivex.functions.Function;
+import io.reactivex.disposables.CompositeDisposable;
 import io.reactivex.schedulers.Schedulers;
 
 public class DroneRepository {
-    private static final String TAG = "LOG_" + DroneRepository.class.getName();
+    private static final String TAG = "LOG_" + DroneRepository.class.getSimpleName();
     private static final boolean GENERATE_DUMMY_DATA = false;
     private static final boolean IS_SITL = false;
 
     private static final String MAVSDK_SERVER_IP = "127.0.0.1";
-    private static final String TCP_SERVER_IP = "127.0.0.1";
-    private static final int TCP_SERVER_PORT = 8787;
+    private static final int TCP_SERVER_PORT = 8888;
     private static final int USB_BAUD_RATE = 57600;
     private static final int BUFFER_SIZE = 2048;
     private static final int IO_TIMEOUT = 1000;
@@ -54,6 +53,9 @@ public class DroneRepository {
     private Context mAppContext;
     private System mDrone;
     private MavsdkServer mMavsdkServer;
+    private CompositeDisposable mCompositeDisposable;
+    private SerialInputOutputManager mSerialManager;
+    private TcpInputOutputManager mTcpManager;
 
     private LiveData<PositionRelative> mPositionRelativeLiveData;
     private LiveData<Speed> mSpeedLiveData;
@@ -61,7 +63,7 @@ public class DroneRepository {
     private LiveData<Telemetry.GpsInfo> mGpsInfoLiveData;
     private LiveData<Telemetry.Position> mPositionLiveData;
 
-    public static DroneRepository getInstance(Application application) {
+    public static DroneRepository getInstance(@NonNull Application application) {
         if (instance == null) {
             instance = new DroneRepository(application);
         }
@@ -70,17 +72,13 @@ public class DroneRepository {
 
     private DroneRepository(Application application) {
         mAppContext = application.getApplicationContext();
+        mCompositeDisposable = new CompositeDisposable();
 
-        if (GENERATE_DUMMY_DATA) {
-            initializeDummyDataStreams();
+        if (IS_SITL) {
+            initializeServerAndDrone("udp://:14540"); // Default port
         } else {
-            if (IS_SITL) {
-                initializeServerAndDrone("udp://192.168.0.255:14550");
-            } else {
-                initializeUsbAndTcp();
-                initializeServerAndDrone("tcp://" + TCP_SERVER_IP + ":" + TCP_SERVER_PORT);
-            }
-            initializeDataStreams();
+            initializeUsbAndTcp();
+            initializeServerAndDrone("tcp://:" + TCP_SERVER_PORT);
         }
     }
 
@@ -109,32 +107,32 @@ public class DroneRepository {
             e.printStackTrace();
         }
 
-        SerialInputOutputManager serialManager = new SerialInputOutputManager(usbSerialPort);
-        serialManager.setReadTimeout(IO_TIMEOUT);
-        serialManager.setReadBufferSize(BUFFER_SIZE);
-        serialManager.setWriteTimeout(IO_TIMEOUT);
-        serialManager.setWriteBufferSize(BUFFER_SIZE);
+        mSerialManager = new SerialInputOutputManager(usbSerialPort);
+        mSerialManager.setReadTimeout(IO_TIMEOUT);
+        mSerialManager.setReadBufferSize(BUFFER_SIZE);
+        mSerialManager.setWriteTimeout(IO_TIMEOUT);
+        mSerialManager.setWriteBufferSize(BUFFER_SIZE);
 
-        TcpInputOutputManager tcpManager = new TcpInputOutputManager(TCP_SERVER_PORT);
-        tcpManager.setReadBufferSize(BUFFER_SIZE);
-        tcpManager.setWriteBufferSize(BUFFER_SIZE);
+        mTcpManager = new TcpInputOutputManager(TCP_SERVER_PORT);
+        mTcpManager.setReadBufferSize(BUFFER_SIZE);
+        mTcpManager.setWriteBufferSize(BUFFER_SIZE);
 
-        serialManager.setListener(new SerialInputOutputManager.Listener() {
+        mSerialManager.setListener(new SerialInputOutputManager.Listener() {
             @Override
             public void onNewData(byte[] data) {
                 // Sending Serial data to TCP
-                tcpManager.writeAsync(data);
+                mTcpManager.writeAsync(data);
             }
             @Override
             public void onRunError(Exception e) {
             }
         });
 
-        tcpManager.setListener(new TcpInputOutputManager.Listener() {
+        mTcpManager.setListener(new TcpInputOutputManager.Listener() {
             @Override
             public void onNewData(byte[] data) {
                 // Sending TCP data to Serial
-                serialManager.writeAsync(data);
+                mSerialManager.writeAsync(data);
             }
             @Override
             public void onRunError(Exception e) {
@@ -142,168 +140,147 @@ public class DroneRepository {
         });
 
         ExecutorService executorService = Executors.newFixedThreadPool(2);
-        executorService.submit(serialManager);
-        executorService.submit(tcpManager);
+        executorService.submit(mSerialManager);
+        executorService.submit(mTcpManager);
     }
 
-    private void initializeServerAndDrone(String systemAddress) {
+    private void initializeServerAndDrone(@NonNull String systemAddress) {
         mMavsdkServer = new MavsdkServer();
         int mavsdkServerPort = mMavsdkServer.run(systemAddress);
 
         mDrone = new System(MAVSDK_SERVER_IP, mavsdkServerPort);
     }
 
-    private void initializeDataStreams() {
-        // Position
-        Flowable<PositionRelative> positionRelativeFlowable =
-                mDrone.getTelemetry().getPositionVelocityNed()
-                        .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .map(new Function<Telemetry.PositionVelocityNed, PositionRelative>() {
-                            @Override
-                            public PositionRelative apply(@NonNull Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
-                                float distance = (float) Math.hypot(positionVelocityNed.getPosition().getNorthM(), positionVelocityNed.getPosition().getEastM());
-                                float height = Math.abs(positionVelocityNed.getPosition().getDownM());
-                                return new PositionRelative(distance, height);
-                            }
-                        })
-                        .subscribeOn(Schedulers.io());
-        mPositionRelativeLiveData = LiveDataReactiveStreams.fromPublisher(positionRelativeFlowable);
-
-        // Speed
-        Flowable<Speed> speedFlowable =
-                mDrone.getTelemetry().getPositionVelocityNed()
-                        .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .map(new Function<Telemetry.PositionVelocityNed, Speed>() {
-                            @Override
-                            public Speed apply(@NonNull Telemetry.PositionVelocityNed positionVelocityNed) throws Exception {
-                                float hspeed = (float) Math.hypot(positionVelocityNed.getVelocity().getNorthMS(), positionVelocityNed.getVelocity().getEastMS());
-                                float vspeed = Math.abs(positionVelocityNed.getVelocity().getDownMS());
-                                return new Speed(hspeed, vspeed);
-                            }
-                        })
-                        .subscribeOn(Schedulers.io());
-        mSpeedLiveData =  LiveDataReactiveStreams.fromPublisher(speedFlowable);
-
-        // Battery
-        Flowable<Telemetry.Battery> batteryFlowable =
-                mDrone.getTelemetry().getBattery()
-                        .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .subscribeOn(Schedulers.io());
-        mBatteryLiveData = LiveDataReactiveStreams.fromPublisher(batteryFlowable);
-
-        // GpsInfo
-        Flowable<Telemetry.GpsInfo> gpsInfoFlowable =
-                mDrone.getTelemetry().getGpsInfo()
-                        .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .subscribeOn(Schedulers.io());
-        mGpsInfoLiveData = LiveDataReactiveStreams.fromPublisher(gpsInfoFlowable);
-
-        // Location
-        Flowable<Telemetry.Position> positionFlowable =
-                mDrone.getTelemetry().getPosition()
-                        .throttleFirst(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .subscribeOn(Schedulers.io());
-        mPositionLiveData = LiveDataReactiveStreams.fromPublisher(positionFlowable);
-    }
-
-    private void initializeDummyDataStreams() {
-        Random random = new Random();
-
-        // Position
-        Flowable<PositionRelative> positionRelativeDummyFlowable =
-                Flowable
-                        .interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .map(new Function<Long, PositionRelative>() {
-                            @Override
-                            public PositionRelative apply(@NonNull Long aLong) throws Exception {
-                                return new PositionRelative(100 * random.nextFloat(), 100 * random.nextFloat());
-                            }
-                        });
-        mPositionRelativeLiveData = LiveDataReactiveStreams.fromPublisher(positionRelativeDummyFlowable);
-
-        // Speed
-        Flowable<Speed> droneSpeedDummyFlowable =
-                Flowable
-                        .interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .map(new Function<Long, Speed>() {
-                            @Override
-                            public Speed apply(@NonNull Long aLong) throws Exception {
-                                return new Speed(10 * random.nextFloat(), 10 * random.nextFloat());
-                            }
-                        });
-        mSpeedLiveData = LiveDataReactiveStreams.fromPublisher(droneSpeedDummyFlowable);
-
-        // Battery
-        Flowable<Telemetry.Battery> batteryDummyFlowable =
-                Flowable
-                        .intervalRange(0, 21, 0, THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .repeat()
-                        .map(new Function<Long, Telemetry.Battery>() {
-                            @Override
-                            public Telemetry.Battery apply(@NonNull Long aLong) throws Exception {
-                                return new Telemetry.Battery((float) (16.8 + aLong * (12.6 - 16.8) / 21), 1 - aLong.floatValue() * 5 * 0.01f);
-                            }
-                        });
-        mBatteryLiveData = LiveDataReactiveStreams.fromPublisher(batteryDummyFlowable);
-
-        // GpsInfo
-        Flowable<Telemetry.GpsInfo> gpsInfoDummyFlowable =
-                Flowable
-                        .intervalRange(0, 11, 0, THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
-                        .repeat()
-                        .map(new Function<Long, Telemetry.GpsInfo>() {
-                            @Override
-                            public Telemetry.GpsInfo apply(@NonNull Long aLong) throws Exception {
-                                return new Telemetry.GpsInfo((int) (2 * aLong), Telemetry.FixType.FIX_3D);
-                            }
-                        });
-        mGpsInfoLiveData = LiveDataReactiveStreams.fromPublisher(gpsInfoDummyFlowable);
-
-        // Position
-        List<Integer> arr = IntStream.rangeClosed(0, 50).boxed().collect(Collectors.toList());
-        arr.addAll(Lists.reverse(arr));
-        Flowable<Telemetry.Position> positionDummyFlowable =
-                Flowable
-                        .intervalRange(0, arr.size(), 0, 100, TimeUnit.MILLISECONDS)
-                        .repeat()
-                        .map(new Function<Long, Telemetry.Position>() {
-                            @Override
-                            public Telemetry.Position apply(@NonNull Long aLong) throws Exception {
-                                return new Telemetry.Position(
-                                        12.904993 + (12.906055 - 12.904993) * arr.get(aLong.intValue()) / (arr.size()/2),
-                                        80.157708 + (80.159610 - 80.157708) * arr.get(aLong.intValue()) / (arr.size()/2),
-                                        80f,
-                                        20f
-                                );
-                            }
-                        });
-
-        mPositionLiveData = LiveDataReactiveStreams.fromPublisher(positionDummyFlowable);
-    }
-
 
     public LiveData<PositionRelative> getPositionRelative() {
+        if (mPositionRelativeLiveData == null) {
+            Flowable<PositionRelative> positionRelativeFlowable;
+
+            if (GENERATE_DUMMY_DATA) {
+                Random random = new Random();
+                positionRelativeFlowable = Flowable.interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .map(aLong -> new PositionRelative(100 * random.nextFloat(), 100 * random.nextFloat()));
+
+            } else {
+                positionRelativeFlowable = mDrone.getTelemetry().getPositionVelocityNed()
+                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .map(positionVelocityNed -> {
+                            float distance = (float) Math.hypot(positionVelocityNed.getPosition().getNorthM(), positionVelocityNed.getPosition().getEastM());
+                            float height = Math.abs(positionVelocityNed.getPosition().getDownM());
+                            return new PositionRelative(distance, height);
+                        })
+                        .subscribeOn(Schedulers.io());
+            }
+
+            mPositionRelativeLiveData = LiveDataReactiveStreams.fromPublisher(positionRelativeFlowable);
+        }
+
         return mPositionRelativeLiveData;
     }
 
     public LiveData<Speed> getSpeed() {
+        if (mSpeedLiveData == null) {
+            Flowable<Speed> speedFlowable;
+
+            if (GENERATE_DUMMY_DATA) {
+                Random random = new Random();
+                speedFlowable = Flowable.interval(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .map(aLong -> new Speed(10 * random.nextFloat(), 10 * random.nextFloat()));
+            } else {
+                speedFlowable = mDrone.getTelemetry().getPositionVelocityNed()
+                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .map(positionVelocityNed -> {
+                            float hspeed = (float) Math.hypot(positionVelocityNed.getVelocity().getNorthMS(), positionVelocityNed.getVelocity().getEastMS());
+                            float vspeed = Math.abs(positionVelocityNed.getVelocity().getDownMS());
+                            return new Speed(hspeed, vspeed);
+                        })
+                        .subscribeOn(Schedulers.io());
+            }
+
+            mSpeedLiveData = LiveDataReactiveStreams.fromPublisher(speedFlowable);
+        }
+
         return mSpeedLiveData;
     }
 
     public LiveData<Telemetry.Battery> getBattery() {
+        if (mBatteryLiveData == null) {
+            Flowable<Telemetry.Battery> batteryFlowable;
+
+            if (GENERATE_DUMMY_DATA) {
+                batteryFlowable = Flowable.intervalRange(0, 21, 0, THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .repeat()
+                        .map(aLong -> new Telemetry.Battery((float) (16.8 + aLong * (12.6 - 16.8) / 21), 1 - aLong.floatValue() * 5 * 0.01f));
+            } else {
+                batteryFlowable = mDrone.getTelemetry().getBattery()
+                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .subscribeOn(Schedulers.io());
+            }
+
+            mBatteryLiveData = LiveDataReactiveStreams.fromPublisher(batteryFlowable);
+        }
+
         return mBatteryLiveData;
     }
 
     public LiveData<Telemetry.GpsInfo> getGpsInfo() {
+        if (mGpsInfoLiveData == null) {
+            Flowable<Telemetry.GpsInfo> gpsInfoFlowable;
+
+            if (GENERATE_DUMMY_DATA) {
+                gpsInfoFlowable = Flowable.intervalRange(0, 11, 0, THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .repeat()
+                        .map(aLong -> new Telemetry.GpsInfo((int) (2 * aLong), Telemetry.FixType.FIX_3D));
+            } else {
+                gpsInfoFlowable = mDrone.getTelemetry().getGpsInfo()
+                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .subscribeOn(Schedulers.io());
+            }
+
+            mGpsInfoLiveData = LiveDataReactiveStreams.fromPublisher(gpsInfoFlowable);
+        }
         return mGpsInfoLiveData;
     }
 
     public LiveData<Telemetry.Position> getPosition() {
+        if (mPositionLiveData == null) {
+            Flowable<Telemetry.Position> positionFlowable;
+
+            if (GENERATE_DUMMY_DATA) {
+                List<Integer> arr = IntStream.rangeClosed(0, 50).boxed().collect(Collectors.toList());
+                arr.addAll(Lists.reverse(arr));
+                positionFlowable = Flowable.intervalRange(0, arr.size(), 0, 100, TimeUnit.MILLISECONDS)
+                        .repeat()
+                        .map(aLong -> new Telemetry.Position(
+                                12.904993 + (12.906055 - 12.904993) * arr.get(aLong.intValue()) / (arr.size()/2),
+                                80.157708 + (80.159610 - 80.157708) * arr.get(aLong.intValue()) / (arr.size()/2),
+                                80f,
+                                20f
+                        ));
+            } else {
+                positionFlowable = mDrone.getTelemetry().getPosition()
+                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .subscribeOn(Schedulers.io());
+            }
+
+            mPositionLiveData = LiveDataReactiveStreams.fromPublisher(positionFlowable);
+        }
+
         return mPositionLiveData;
     }
 
+
     public void destroy() {
+        mCompositeDisposable.dispose();
         mDrone.dispose();
         mMavsdkServer.stop();
+
+        if (mSerialManager != null) {
+            mSerialManager.stop();
+        }
+
+        if (mTcpManager != null) {
+            mTcpManager.stop();
+        }
     }
 }

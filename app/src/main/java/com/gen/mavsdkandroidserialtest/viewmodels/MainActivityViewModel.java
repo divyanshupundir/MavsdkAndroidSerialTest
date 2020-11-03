@@ -21,6 +21,10 @@ public class MainActivityViewModel extends AndroidViewModel {
         mDroneRepository = DroneRepository.getInstance(application);
     }
 
+    public DroneRepository getDroneRepositoryInstance() {
+        return mDroneRepository;
+    }
+
     public LiveData<PositionRelative> getPositionRelative() {
         return mDroneRepository.getPositionRelative();
     }

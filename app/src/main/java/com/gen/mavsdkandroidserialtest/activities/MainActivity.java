@@ -15,6 +15,7 @@ import android.widget.TextView;
 
 import com.gen.mavsdkandroidserialtest.R;
 import com.gen.mavsdkandroidserialtest.models.PositionRelative;
+import com.gen.mavsdkandroidserialtest.repositories.DroneRepository;
 import com.gen.mavsdkandroidserialtest.utils.TextUtils;
 import com.gen.mavsdkandroidserialtest.viewmodels.MainActivityViewModel;
 
@@ -24,13 +25,13 @@ import java.util.List;
 import io.mavsdk.telemetry.Telemetry;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "LOG_" + MainActivity.class.getName();
+    private static final String TAG = "LOG_" + MainActivity.class.getSimpleName();
 
     private static final int REQUEST_CODE_ALL_PERMISSIONS = 1001;
     private static final String[] PERMISSIONS = new String[]{
             Manifest.permission.INTERNET,
             Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.READ_EXTERNAL_STORAGE
     };
 
     private MainActivityViewModel mViewModel;
@@ -112,5 +113,11 @@ public class MainActivity extends AppCompatActivity {
                 observeData();
             }
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        mViewModel.getDroneRepositoryInstance().destroy();
+        super.onDestroy();
     }
 }
