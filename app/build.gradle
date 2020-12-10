@@ -12,29 +12,6 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-
-        ndk {
-            abiFilters 'arm64-v8a'
-            ldLibs 'android', 'log', 'dl', 'EGL'
-        }
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=c++_shared"
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-            version "3.10.2"
-        }
-    }
-
-    ndkVersion '21.3.6528147'
-
-    packagingOptions {
-        pickFirst "**/libmavsdk_server.so"
     }
 
     buildTypes {
@@ -65,6 +42,7 @@ dependencies {
     implementation 'io.reactivex.rxjava2:rxandroid:2.1.1'
 
     implementation 'io.mavsdk:mavsdk:0.5.1'
+    implementation 'io.mavsdk:mavsdk-server:0.5.0'
     implementation 'com.github.mik3y:usb-serial-for-android:3.2.0'
 
     implementation 'com.google.guava:guava:27.0.1-android'

@@ -50,10 +50,10 @@ public class DroneRepository {
 
     private static DroneRepository instance;
 
-    private Context mAppContext;
+    private final Context mAppContext;
+    private final CompositeDisposable mCompositeDisposable;
     private System mDrone;
     private MavsdkServer mMavsdkServer;
-    private CompositeDisposable mCompositeDisposable;
     private SerialInputOutputManager mSerialManager;
     private TcpInputOutputManager mTcpManager;
 
@@ -163,7 +163,7 @@ public class DroneRepository {
 
             } else {
                 positionRelativeFlowable = mDrone.getTelemetry().getPositionVelocityNed()
-                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .throttleLast(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(positionVelocityNed -> {
                             float distance = (float) Math.hypot(positionVelocityNed.getPosition().getNorthM(), positionVelocityNed.getPosition().getEastM());
                             float height = Math.abs(positionVelocityNed.getPosition().getDownM());
@@ -188,7 +188,7 @@ public class DroneRepository {
                         .map(aLong -> new Speed(10 * random.nextFloat(), 10 * random.nextFloat()));
             } else {
                 speedFlowable = mDrone.getTelemetry().getPositionVelocityNed()
-                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .throttleLast(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .map(positionVelocityNed -> {
                             float hspeed = (float) Math.hypot(positionVelocityNed.getVelocity().getNorthMS(), positionVelocityNed.getVelocity().getEastMS());
                             float vspeed = Math.abs(positionVelocityNed.getVelocity().getDownMS());
@@ -213,7 +213,7 @@ public class DroneRepository {
                         .map(aLong -> new Telemetry.Battery((float) (16.8 + aLong * (12.6 - 16.8) / 21), 1 - aLong.floatValue() * 5 * 0.01f));
             } else {
                 batteryFlowable = mDrone.getTelemetry().getBattery()
-                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .throttleLast(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .subscribeOn(Schedulers.io());
             }
 
@@ -233,7 +233,7 @@ public class DroneRepository {
                         .map(aLong -> new Telemetry.GpsInfo((int) (2 * aLong), Telemetry.FixType.FIX_3D));
             } else {
                 gpsInfoFlowable = mDrone.getTelemetry().getGpsInfo()
-                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .throttleLast(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .subscribeOn(Schedulers.io());
             }
 
@@ -259,7 +259,7 @@ public class DroneRepository {
                         ));
             } else {
                 positionFlowable = mDrone.getTelemetry().getPosition()
-                        .throttleLatest(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
+                        .throttleLast(THROTTLE_TIME_MILLIS, TimeUnit.MILLISECONDS)
                         .subscribeOn(Schedulers.io());
             }
 

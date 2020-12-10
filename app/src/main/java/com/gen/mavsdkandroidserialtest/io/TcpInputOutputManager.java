@@ -3,6 +3,8 @@ package com.gen.mavsdkandroidserialtest.io;
 import android.os.Process;
 import android.util.Log;
 
+import androidx.annotation.Nullable;
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -12,7 +14,7 @@ import java.nio.ByteBuffer;
 
 public class TcpInputOutputManager implements Runnable {
 
-    private static final String TAG = "LOG_" + TcpInputOutputManager.class.getName();
+    private static final String TAG = "LOG_" + TcpInputOutputManager.class.getSimpleName();
     private static final boolean DEBUG = true;
     private static final int BUFFER_SIZE = 4096;
 
@@ -28,33 +30,35 @@ public class TcpInputOutputManager implements Runnable {
         STOPPING;
     }
 
-    private int mThreadPriority = Process.THREAD_PRIORITY_URGENT_AUDIO;
-    private State mState = State.STOPPED; // Synchronized by 'this'
+    private final int mServerPort;
     private ServerSocket mServerSocket;
     private Socket mSocket;
     private Listener mListener;
     private DataInputStream mInputStream;
     private DataOutputStream mOutputStream;
-    private final int mServerPort;
+
+    private State mState = State.STOPPED; // Synchronized by 'this'
+    private int mThreadPriority = Process.THREAD_PRIORITY_URGENT_AUDIO;
 
     public interface Listener {
-        public void onNewData(byte[] data);
-        public void onRunError(Exception e);
+        void onNewData(byte[] data);
+        void onRunError(Exception e);
     }
 
     public TcpInputOutputManager(int serverPort) {
         mServerPort = serverPort;
     }
 
-    public TcpInputOutputManager(int serverPort, Listener listener) {
+    public TcpInputOutputManager(int serverPort, @Nullable Listener listener) {
         mServerPort = serverPort;
         mListener = listener;
     }
 
-    public synchronized void setListener(Listener listener) {
+    public synchronized void setListener(@Nullable Listener listener) {
         mListener = listener;
     }
 
+    @Nullable
     public synchronized Listener getListener() {
         return mListener;
     }
@@ -91,7 +95,6 @@ public class TcpInputOutputManager implements Runnable {
     public int getWriteBufferSize() {
         return mWriteBuffer.capacity();
     }
-
 
     public void writeAsync(byte[] data) {
         synchronized (mWriteBufferLock) {
@@ -194,11 +197,9 @@ public class TcpInputOutputManager implements Runnable {
         synchronized (mReadBufferLock) {
             buffer = mReadBuffer.array();
         }
-
         if (mInputStream.available() == 0) {
             return;
         }
-
         len = mInputStream.read(buffer);
         if (len > 0) {
             if (DEBUG) Log.d(TAG, "Read data len=" + len);
@@ -209,6 +210,5 @@ public class TcpInputOutputManager implements Runnable {
                 listener.onNewData(data);
             }
         }
-
     }
 }

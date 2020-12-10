@@ -63,30 +63,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void observeData() {
-        mViewModel.getPositionRelative().observe(this, new Observer<PositionRelative>() {
-            @Override
-            public void onChanged(PositionRelative positionRelative) {
-                tv_main_data_distance.setText(TextUtils.roundToDecimalPlaces(positionRelative.getDistance(), 2));
-                tv_main_data_height.setText(TextUtils.roundToDecimalPlaces(positionRelative.getHeight(), 2));            }
+        mViewModel.getPositionRelative().observe(this, positionRelative -> {
+            tv_main_data_distance.setText(TextUtils.roundToDecimalPlaces(positionRelative.getDistance(), 2));
+            tv_main_data_height.setText(TextUtils.roundToDecimalPlaces(positionRelative.getHeight(), 2));
         });
 
-        mViewModel.getBattery().observe(this, new Observer<Telemetry.Battery>() {
-            @Override
-            public void onChanged(Telemetry.Battery battery) {
-                int remainingPercentInt = (int) (battery.getRemainingPercent() * 100);
+        mViewModel.getBattery().observe(this, battery -> {
+            int remainingPercentInt = (int) (battery.getRemainingPercent() * 100);
 
-                tv_main_data_battery_charge.setText(String.valueOf(remainingPercentInt).concat("%"));
-                tv_main_data_battery_voltage.setText(TextUtils.roundToDecimalPlaces(battery.getVoltageV(), 1));
-            }
+            tv_main_data_battery_charge.setText(String.valueOf(remainingPercentInt).concat("%"));
+            tv_main_data_battery_voltage.setText(TextUtils.roundToDecimalPlaces(battery.getVoltageV(), 1));
         });
 
-        mViewModel.getPosition().observe(this, new Observer<Telemetry.Position>() {
-            @Override
-            public void onChanged(Telemetry.Position position) {
-                tv_main_data_latitude.setText(TextUtils.roundToDecimalPlaces(position.getLatitudeDeg(), 5));
-                tv_main_data_longitude.setText(TextUtils.roundToDecimalPlaces(position.getLongitudeDeg(), 5));
+        mViewModel.getPosition().observe(this, position -> {
+            tv_main_data_latitude.setText(TextUtils.roundToDecimalPlaces(position.getLatitudeDeg(), 5));
+            tv_main_data_longitude.setText(TextUtils.roundToDecimalPlaces(position.getLongitudeDeg(), 5));
 
-            }
         });
     }
 
@@ -100,7 +92,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         if (!listPermissionsNeeded.isEmpty()) {
-            ActivityCompat.requestPermissions(this, listPermissionsNeeded.toArray(new String[listPermissionsNeeded.size()]), REQUEST_CODE_ALL_PERMISSIONS);
+            ActivityCompat.requestPermissions(this, listPermissionsNeeded.toArray(new String[0]), REQUEST_CODE_ALL_PERMISSIONS);
             return false;
         }
         return true;
